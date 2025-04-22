@@ -1,0 +1,12 @@
+streamlit
+pandas
+python-dotenv
+reportlab
+PyPDF2
+python-docx
+python-pptx
+lxml
+crewai
+crewai-tools
+langchain-openai
+openai

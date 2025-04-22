@@ -1,0 +1,10 @@
+services:
+  - type: web
+    name: ai-judge
+    env: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: streamlit run app.py 
+    envVars:
+      - key: API_KEY        # set in your Render dashboard
+      - key: SERPER_API_KEY # set in your Render dashboard
