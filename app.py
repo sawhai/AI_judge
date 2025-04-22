@@ -58,6 +58,7 @@ load_dotenv()
 api_key = os.getenv("API_KEY")
 os.environ["OPENAI_API_KEY"] = api_key
 
+
 serper_api_key = os.getenv("SERPER_API_KEY")
 os.environ["SERPER_API_KEY"] = serper_api_key
 
@@ -74,10 +75,10 @@ AVAILABLE_MODELS = {
     "GPT-4o-mini": "gpt-4o-mini",
     "GPT-4o": "gpt-4o",
     "GPT-o3": "o3",
-    "GPT-04-mini": "o4-mini"
+    "GPT-o4-mini": "o4-mini"
 }
 # Set a default model (will be overridden by user selection).
-default_model_choice = "GPT-4o-mini"
+default_model_choice = "GPT-4o"
 
 # --- Function Definitions ---
 
