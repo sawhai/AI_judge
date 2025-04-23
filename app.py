@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-AI Judge - Fekrety Innovation Evaluator
+AI Judge - Fekrety Innovation Evaluator (No JSON output)
 
 This Streamlit app allows you to submit two files:
-  1. A Template Excel file containing project details (e.g. project title, submitter name, email, phone, beneficiaries, etc.).
-  2. A Pitch Deck PPTX file containing the pitch deck information:
-     - Slide 1: NSV information.
-     - Slide 2: Value creation, functionality, insights, next steps (with possible product–price–place–promotion info).
+  1. A Template Excel file containing project details.
+  2. A Pitch Deck PPTX file containing the pitch deck information.
 
 The app displays the submission details from the Excel file and evaluates the idea via a multi-agent system.
 The complete agent thought process is shown with a typewriter effect,
@@ -17,7 +15,6 @@ import os
 import sys
 import io
 import re
-import json
 import time
 import base64
 import pandas as pd
@@ -25,9 +22,6 @@ from dotenv import load_dotenv
 import streamlit as st
 import warnings
 import streamlit.components.v1 as components
-from streamlit.components.v1 import html
-
-# Import PDF generation library
 from reportlab.lib.pagesizes import A4
 from reportlab.lib import colors
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
@@ -38,37 +32,22 @@ import zipfile
 from pptx import Presentation
 from lxml import etree
 from io import BytesIO
-from lxml import etree
-
-
-warnings.filterwarnings('ignore')
-
-# Import packages for reading various file formats
 import PyPDF2
 from docx import Document
-import pptx
-
-# Import multi-agent system components
 from crewai import Agent, Task, Crew
 from langchain_openai import ChatOpenAI
 from openai import OpenAI
+from crewai_tools import ScrapeWebsiteTool, SerperDevTool
 
 # --- Global Configuration ---
 load_dotenv()
 api_key = os.getenv("API_KEY")
 os.environ["OPENAI_API_KEY"] = api_key
-
-
 serper_api_key = os.getenv("SERPER_API_KEY")
 os.environ["SERPER_API_KEY"] = serper_api_key
-
-from crewai_tools import ScrapeWebsiteTool, SerperDevTool
-
-# Initialize the tools
-search_tool = SerperDevTool(recency_days=365)  # only fetch results from the past year
+search_tool = SerperDevTool(recency_days=365)
 scrape_tool = ScrapeWebsiteTool()
 
-# Define available models for selection.
 AVAILABLE_MODELS = {
     "GPT-4.1": "gpt-4.1",
     "GPT-4.1-mini": "gpt-4.1-mini",
@@ -77,19 +56,16 @@ AVAILABLE_MODELS = {
     "GPT-o3": "o3",
     "GPT-o4-mini": "o4-mini"
 }
-# Set a default model (will be overridden by user selection).
 default_model_choice = "GPT-4o"
 
-# --- Function Definitions ---
+# --- Helper Functions ---
 
 def initialize_ai_clients(model_name):
-    """Initialize the API client and language model."""
     client = OpenAI(api_key=api_key)
     llm = ChatOpenAI(model=model_name, api_key=api_key)
     return client, llm
 
 def clean_output(raw_text: str) -> str:
-    """Remove ANSI escape sequences from text."""
     ansi_escape = re.compile(r'\x1B\[[0-?]*[ -/]*[@-~]')
     return ansi_escape.sub('', raw_text)
 
@@ -347,135 +323,89 @@ def create_pdf_report(idea_title, score, justification, template_df):
     return buffer
 
 def process_idea(idea_text, llm, excel_title):
-    """
-    Process the idea text using the multi-agent system.
-    
-    Agents:
-      - Idea Analyzer: Extracts details on creativity, viability, and NSV.
-      - Idea Scorer: Scores the idea with a detailed breakdown.
-      
-    Returns:
-      - The idea title (from Excel), score, and justification.
-      - The full console output (agent thought process) as a string.
-    """
-    # --- Inside process_idea (before creating tasks) ---
-    summary_extractor_agent = Agent(
-    role="Idea Summarizer",
-    goal=(
-        "Read the entire idea pitch and produce a comprehensive summary of the idea"
-        "that captures its core concept and objectives."
-    ),
-    verbose=True,
-    allow_delegation=False,
-    backstory=(
-        "You are a concise executive summary writer. You have a vast knowledge about banking and Kuwait's financial and social conditions."
-        "Your job is to distill long submissions into a comprehensive overview."
+    # Define agents
+    summary_agent = Agent(
+        role="Idea Summarizer",
+        goal="Summarize the core concept and objectives of the submitted idea.",
+        verbose=True,
+        allow_delegation=False,
+        backstory="You are an executive summary writer with banking expertise in Kuwait."
     )
-    )
-
-    idea_analyzer_agent = Agent(
+    analysis_agent = Agent(
         role="Idea Analyzer",
         goal=(
-            "Analyze the idea based on the summary received from the summary_extractor_agent  "
-            "to pull out key insights on Creativity, Viability, and NSV (Need, Solution, Value). "
-            "If you need external industry context—Kuwaiti banking trends, best practices, competitor moves—"
-            "search the internet. When searching the internet, your query should be a summary of the entire project. "
+            "Analyze Creativity, Viability, and NSV. "
+            "Use internet tools for context if needed, but present insights clearly."
         ),
         verbose=True,
         allow_delegation=False,
-        backstory=(
-            "You are a senior Gulf Bank executive, expert in Kuwaiti banking. You know our Vision & Mission. "
-            "Read the idea from the summary extractor agent "
-            "Wheb you search the internet, ignore the title of the project. your search query should be extracted from the content of the pitch"
-            "Then summarize how Creative, Viable, and Strategic this idea truly is."
-        ),
-        tools = [scrape_tool, search_tool]   # <— now your agent can do live searches
+        backstory="You are a Gulf Bank expert evaluating innovations.",
+        tools=[scrape_tool, search_tool]
     )
-    
-    idea_scorer_agent = Agent(
+    scorer_agent = Agent(
         role="Idea Scorer",
         goal=(
-            "Score the idea on a scale of 1 to 100 based on the following criteria:\n"
-            "1. Creativity (35 points): Originality and uniqueness.\n"
-            "2. Viability (35 points): Practical feasibility and clarity of the implementation plan.\n"
-            "3. NSV (30 points): Overall value based on Need, Solution, and Value.\n\n"
-            "Be highly critical: reserve 0–40 for poor ideas, 41–60 for average ideas, 61–80 for good ideas, and 81–100 only for truly exceptional, implementable, high‑impact ideas. "
-            "Provide a detailed breakdown with justification for each criterion, explicitly calling out any weaknesses or risks that lowered the score. "
-            "Return your result in JSON format exactly like this (without additional text):\n\n"
-            "{{\n"
-            '  "score": <score>,\n'
-            '  "justification": "Creativity: <explanation>, Viability: <explanation>, NSV: <explanation>"\n'
-            "}}\n"
+            "Score the idea on a scale of 1 to 100 and provide a detailed breakdown. "
+            "Output exactly in this format (no JSON):\n"
+            "Score: <number>/100\n"
+            "Creativity: <explanation>\n"
+            "Viability: <explanation>\n"
+            "NSV: <explanation>"
         ),
         verbose=True,
         allow_delegation=False,
-        backstory=(
-            "You are a veteran Gulf Bank executive and tough innovation judge. "
-            "You understand that mediocrity is common—only the very best ideas should score above 80. "
-            "When scoring, you must clearly delineate what makes an idea poor, average, good, or excellent, "
-            "and call out any gaps or risks that push an idea into a lower bracket."
-        )
+        backstory="You are a tough innovation judge for Gulf Bank."
     )
-    
-    summary_task = Task(
-        description="Generate a comprehensive summary of the submitted idea ({idea_text}).",
-        expected_output="A comprehensive paragraph summarizing the core concept and objectives of the submitted idea.",
-        agent=summary_extractor_agent,
+
+    # Tasks
+    task1 = Task(
+        description="Generate a summary of the idea.",
+        expected_output="A concise summary paragraph.",
+        agent=summary_agent
     )
-    
-    
-    
-    idea_analysis_task = Task(
-    description=(
-        "Using the **entire** summary provided by the summary_task, extract detailed notes on "
-        "Creativity, Viability, and NSV.  "
-    ),
-    expected_output=(
-        "A structured, thorough breakdown of the idea’s innovative aspects, feasibility plan, "
-        "pitch quality, and strategic value."
-    ),
-    agent=idea_analyzer_agent,
-    context=[summary_task],
+    task2 = Task(
+        description="Analyze creativity, viability, and NSV based on the summary.",
+        expected_output="Detailed analysis notes.",
+        agent=analysis_agent,
+        context=[task1]
     )
-    
-    idea_scoring_task = Task(
-        description=(
-            "Using the analysis from idea_analysis_task, score the idea "
-            "on a scale of 1 to 100 based on the following criteria: Creativity (35), Viability (35), and NSV (30): Need, Solution, Value). "
-            "Provide a detailed breakdown and justification for each criterion. Return your result in JSON format exactly as described above."
-        ),
-        expected_output='A JSON object with keys "score" and "justification".',
-        context=[idea_analysis_task],
-        agent=idea_scorer_agent,
+    task3 = Task(
+        description="Score the idea and justify each criterion.",
+        expected_output="Plain-text formatted score and breakdown.",
+        agent=scorer_agent,
+        context=[task2]
     )
-    
-    crew_inputs = {'idea_text': idea_text}
-    innovation_judging_crew = Crew(
-        agents=[summary_extractor_agent,idea_analyzer_agent, idea_scorer_agent],
-        tasks=[summary_task,idea_analysis_task, idea_scoring_task],
+
+    crew = Crew(
+        agents=[summary_agent, analysis_agent, scorer_agent],
+        tasks=[task1, task2, task3],
         manager=llm,
         verbose=True
     )
-    
+
+    # Run
     buf = io.StringIO()
     old_stdout = sys.stdout
     sys.stdout = buf
-    raw_result = innovation_judging_crew.kickoff(inputs=crew_inputs)
+    crew.kickoff(inputs={"idea_text": idea_text})
     sys.stdout = old_stdout
-    thought_output = buf.getvalue()
+    thought = clean_output(buf.getvalue())
     buf.close()
-    
-    cleaned_thought = clean_output(thought_output)
-    
-    try:
-        parsed_result = json.loads(str(raw_result))
-        score = parsed_result.get("score", None)
-        justification = parsed_result.get("justification", None)
-    except Exception as e:
-        score, justification = None, None
-        st.error("Error parsing final JSON output: " + str(e))
-    
-    return excel_title, score, justification, cleaned_thought
+
+    # Extract score and justification
+    # Expect lines: Score: ##/100, then Creativity:, Viability:, NSV:
+    lines = thought.strip().splitlines()
+    score_line = next((l for l in lines if l.startswith("Score:")), None)
+    score = None
+    if score_line:
+        m = re.search(r"Score:\s*(\d+)/(\d+)", score_line)
+        if m:
+            score = int(m.group(1))
+    # Collect justification lines
+    just_lines = [l for l in lines if l.startswith(("Creativity:", "Viability:", "NSV:"))]
+    justification = "\n".join(just_lines)
+
+    return excel_title, score, justification, thought
 
 # --- Streamlit UI Setup ---
 st.set_page_config(
@@ -678,9 +608,5 @@ if template_file is not None and pitch_file is not None:
                 mime="application/pdf"
             )
             
-            result_json = json.dumps({
-                "idea_title": idea_title,
-                "score": score,
-                "justification": justification
-            }, indent=2)
+
             
